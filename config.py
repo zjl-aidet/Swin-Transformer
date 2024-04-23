@@ -61,7 +61,7 @@ _C.MODEL.PRETRAINED = ''
 # Checkpoint to resume, could be overwritten by command line argument
 _C.MODEL.RESUME = ''
 # Number of classes, overwritten in data preparation
-_C.MODEL.NUM_CLASSES = 1000
+_C.MODEL.NUM_CLASSES = 2
 # Dropout rate
 _C.MODEL.DROP_RATE = 0.0
 # Drop path rate
@@ -264,6 +264,22 @@ _C.LOCAL_RANK = 0
 _C.FUSED_WINDOW_PROCESS = False
 _C.FUSED_LAYERNORM = False
 
+# Deepfake detection specific arguments
+_C.csv_data_path = ""
+_C.base_path = ""
+_C.dataset = ""
+_C.generator = ""
+_C.min_size = None
+_C.max_size = None
+_C.jpeg_qf = None
+_C.class_map = "../../class_map.txt"
+_C.balance_train_classes = True
+_C.balance_val_classes = None
+_C.sample_qf_ai = None
+_C.resize = None
+_C.cropsize = None
+_C.cropmethod = "center"
+_C.compress_natural = False
 
 def _update_config_from_file(config, cfg_file):
     config.defrost()
@@ -336,6 +352,38 @@ def update_config(config, args):
     ## Overwrite optimizer if not None, currently we use it for [fused_adam, fused_lamb]
     if _check_args('optim'):
         config.TRAIN.OPTIMIZER.NAME = args.optim
+
+
+    if _check_args('csv_data_path'):
+        config.csv_data_path = args.csv_data_path
+    if _check_args('base_path'):
+        config.base_path = args.base_path
+    if _check_args('dataset'):
+        config.dataset = args.dataset
+    if _check_args('generator'):
+        config.generator = args.generator
+    if _check_args('min_size'):
+        config.min_size = args.min_size
+    if _check_args('max_size'):
+        config.max_size = args.max_size
+    if _check_args('jpeg_qf'):
+        config.jpeg_qf = args.jpeg_qf
+    if _check_args('class_map'):
+        config.class_map = args.class_map
+    if _check_args('balance_train_classes'):
+        config.balance_train_classes = args.balance_train_classes
+    if _check_args('balance_val_classes'):
+        config.balance_val_classes = args.balance_val_classes
+    if _check_args('sample_qf_ai'):
+        config.sample_qf_ai = args.sample_qf_ai
+    if _check_args('resize'):
+        config.resize = args.resize
+    if _check_args('cropsize'):
+        config.cropsize = args.cropsize
+    if _check_args('cropmethod'):
+        config.cropmethod = args.cropmethod
+    if _check_args('compress_natural'):
+        config.compress_natural = args.compress_natural
 
     # set local rank for distributed training
     if PYTORCH_MAJOR_VERSION == 1:

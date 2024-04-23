@@ -12,6 +12,9 @@ import random
 import argparse
 import datetime
 import numpy as np
+import csv
+import shutil
+import pandas as pd
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -80,6 +83,40 @@ def parse_option():
     parser.add_argument('--optim', type=str,
                         help='overwrite optimizer if provided, can be adamw/sgd/fused_adam/fused_lamb.')
 
+    ## Deepfake detection specific arguments
+    parser.add_argument('--csv_data_path', type=str, help='The path to the CSV file containing all the metadatqaa about the GenImage dataset')
+    parser.add_argument('--base_path', type = str, help = 'path where the GenImage directoty is stored')
+    parser.add_argument('--dataset', type=str,
+                    help='the dataset defines which dataset is used in the dataloader -> One of classic, jpeg96, size_constrained or define new')
+    parser.add_argument('--generator', type=str, choices=['Midjourney', 'stable_diffusion_v_1_5', 'stable_diffusion_v_1_4', 'wukong', 'ADM', 'VQDM', 'glide', 'BigGAN'],
+                    help='this is the generator on which the model is trained, so it defines the genimage subset')
+    # If dataset == "size_constrained":
+    parser.add_argument('--min_size', type=int, default=None,
+                    help='Only nature images in intervall [min_size, max_size] are included')
+    parser.add_argument('--max_size', type=int, default=None,
+                    help='Only nature images in intervall [min_size, max_size] are included')
+    parser.add_argument('--jpeg_qf', type=int, default=None,
+                    help='if set, all images are jpeg compressed with this quality factor')
+    parser.add_argument('--class-map', default='../../class_map.txt', type=str, metavar='FILENAME',
+                    help='path to class to idx mapping file')
+    parser.add_argument('--balance_train_classes', action='store_true', default=False,
+                    help='whether or not to balance train data so that the class distribution is equal in ai images and nature images \
+                        (number of instances per imagenet class is same in ai images and nature images)')
+    parser.add_argument('--balance_val_classes', action='store_true', default=False,
+                    help='whether or not to balance val data so that the class distribution is equal in ai images and nature images \
+                        (number of instances per imagenet class is same in ai images and nature images)')
+    parser.add_argument('--sample_qf_ai', action='store_true', default=False,
+                    help='If this is set and jpeg_qf is None, the ai qf is sampled from the distribution of the qf from all natural train images')
+    parser.add_argument('--resize', type=int, default=None,
+                        help='if set, all images are first resized to this')
+    parser.add_argument('--cropsize', type=int, default=None,
+                        help='if set, all images are cropped to this size arfter resizing')
+    parser.add_argument('--cropmethod', type=str, choices="['center', 'random']", default='center')
+    parser.add_argument('--compress_natural', action='store_true', default=False,
+                        help=' Whether to also compress the natural images with the given jpeg qf')
+
+
+
     args, unparsed = parser.parse_known_args()
 
     config = get_config(args)
@@ -136,14 +173,14 @@ def main(config):
 
     if config.MODEL.RESUME:
         max_accuracy = load_checkpoint(config, model_without_ddp, optimizer, lr_scheduler, loss_scaler, logger)
-        acc1, acc5, loss = validate(config, data_loader_val, model)
+        acc1, loss = validate(config, data_loader_val, model)
         logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
         if config.EVAL_MODE:
             return
 
     if config.MODEL.PRETRAINED and (not config.MODEL.RESUME):
         load_pretrained(config, model_without_ddp, logger)
-        acc1, acc5, loss = validate(config, data_loader_val, model)
+        acc1, loss = validate(config, data_loader_val, model)
         logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
 
     if config.THROUGHPUT_MODE:
@@ -161,10 +198,13 @@ def main(config):
             save_checkpoint(config, epoch, model_without_ddp, max_accuracy, optimizer, lr_scheduler, loss_scaler,
                             logger)
 
-        acc1, acc5, loss = validate(config, data_loader_val, model)
+        acc1, loss = validate(config, data_loader_val, model)
+        log_scores(epoch, acc1, loss, config.OUTPUT)
         logger.info(f"Accuracy of the network on the {len(dataset_val)} test images: {acc1:.1f}%")
         max_accuracy = max(max_accuracy, acc1)
         logger.info(f'Max accuracy: {max_accuracy:.2f}%')
+        summary_csv_file_path = os.path.join(config.OUTPUT, "summary.csv")
+        update_saved_models(summary_csv_file_path, config.OUTPUT)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -239,7 +279,6 @@ def validate(config, data_loader, model):
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     acc1_meter = AverageMeter()
-    acc5_meter = AverageMeter()
 
     end = time.time()
     for idx, (images, target) in enumerate(data_loader):
@@ -252,15 +291,13 @@ def validate(config, data_loader, model):
 
         # measure accuracy and record loss
         loss = criterion(output, target)
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1 = accuracy(output, target, topk=(1,))[0]
 
         acc1 = reduce_tensor(acc1)
-        acc5 = reduce_tensor(acc5)
         loss = reduce_tensor(loss)
 
         loss_meter.update(loss.item(), target.size(0))
         acc1_meter.update(acc1.item(), target.size(0))
-        acc5_meter.update(acc5.item(), target.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -273,10 +310,9 @@ def validate(config, data_loader, model):
                 f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                 f'Loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
                 f'Acc@1 {acc1_meter.val:.3f} ({acc1_meter.avg:.3f})\t'
-                f'Acc@5 {acc5_meter.val:.3f} ({acc5_meter.avg:.3f})\t'
                 f'Mem {memory_used:.0f}MB')
-    logger.info(f' * Acc@1 {acc1_meter.avg:.3f} Acc@5 {acc5_meter.avg:.3f}')
-    return acc1_meter.avg, acc5_meter.avg, loss_meter.avg
+    logger.info(f' * Acc@1 {acc1_meter.avg:.3f}')
+    return acc1_meter.avg, loss_meter.avg
 
 
 @torch.no_grad()
@@ -297,6 +333,40 @@ def throughput(data_loader, model, logger):
         tic2 = time.time()
         logger.info(f"batch_size {batch_size} throughput {30 * batch_size / (tic2 - tic1)}")
         return
+
+def log_scores(epoch, accuracy, loss, output_path):
+    """
+    a help function that writes the accuracy in a csv file
+    """
+    file_path = os.path.join(output_path, "summary.csv")
+    
+    with open(file_path, mode='a', newline='') as csv_file:
+        csv_writer = csv.writer(csv_file)
+        
+        # Write the accuracy data
+        csv_writer.writerow([epoch, accuracy, loss])
+
+def update_saved_models(summary_csv_file_path, output_dir_path):
+
+    col_names = ["epoch", "accuracy", "loss"]
+    df = pd.read_csv(summary_csv_file_path, names=col_names)
+    best_epoch_row = df[df['accuracy'] == df['accuracy'].max()]
+    best_epoch = best_epoch_row['epoch'].values[0]
+
+    # Step 2: Determine the last epoch in the CSV.
+    last_epoch = df['epoch'].iloc[-1]
+
+    # Step 3: Copy the checkpoint files to overwrite target files.
+    best_checkpoint_file = os.path.join(output_dir_path, f'ckpt_epoch_{best_epoch}.pth')  # Adjust the checkpoint naming convention
+    last_checkpoint_file = os.path.join(output_dir_path, f'ckpt_epoch_{last_epoch}.pth')  # Adjust the checkpoint naming convention
+
+    if config.LOCAL_RANK == 0:
+        print("saving the last model in last.pth...")
+        shutil.copy(best_checkpoint_file, os.path.join(output_dir_path, 'model_best.pth'))
+        shutil.copy(last_checkpoint_file, os.path.join(output_dir_path, 'last.pth'))
+
+    print(f'Best epoch: {best_epoch}, Best accuracy: {best_epoch_row["accuracy"].values[0]}')
+    print(f'Last epoch: {last_epoch}')
 
 
 if __name__ == '__main__':
