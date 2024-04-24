@@ -97,7 +97,7 @@ def parse_option():
                     help='Only nature images in intervall [min_size, max_size] are included')
     parser.add_argument('--jpeg_qf', type=int, default=None,
                     help='if set, all images are jpeg compressed with this quality factor')
-    parser.add_argument('--class-map', default='../../class_map.txt', type=str, metavar='FILENAME',
+    parser.add_argument('--class-map', default='./class_map.txt', type=str, metavar='FILENAME',
                     help='path to class to idx mapping file')
     parser.add_argument('--balance_train_classes', action='store_true', default=False,
                     help='whether or not to balance train data so that the class distribution is equal in ai images and nature images \
